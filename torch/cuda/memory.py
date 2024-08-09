@@ -68,6 +68,9 @@ if not hasattr(torch._C, "_MemPool"):
     torch._C.__dict__["_cuda_beginAllocateToPool"] = _dummy_type(
         "_cuda_beginAllocateToPool"
     )
+    torch._C.__dict__["_cuda_endAllocateCurrentStreamToPool"] = _dummy_type(
+        "_cuda_endAllocateCurrentStreamToPool"
+    )
 
 from torch._C import (  # noqa: F401
     _cuda_beginAllocateToPool,
