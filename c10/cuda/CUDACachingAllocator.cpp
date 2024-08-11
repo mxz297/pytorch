@@ -2688,7 +2688,8 @@ class DeviceCachingAllocator {
         lock.unlock();
       }
       auto active_pool = MemPoolContext::getActiveMemPool();
-      if (active_pool && active_pool->allocator() && p.pool->owner_PrivatePool) {
+      if (active_pool && active_pool->allocator() &&
+          p.pool->owner_PrivatePool) {
         ptr = active_pool->allocator()->raw_alloc(size);
         p.err = ptr ? cudaSuccess : cudaErrorMemoryAllocation;
       } else {
