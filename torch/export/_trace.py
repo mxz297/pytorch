@@ -11,6 +11,7 @@ from contextlib import contextmanager, nullcontext
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 import torch
+
 import torch._dynamo
 import torch.fx
 import torch.utils._pytree as pytree
@@ -2075,6 +2076,13 @@ def _export(
     torch._export.utils.remove_proxy_from_state_dict(original_state_dict, in_place=True)
 
     from torch._export.verifier import Verifier
+
+    if (
+        isinstance(mod, torch.fx.GraphModule)
+        and hasattr(mod, "meta")
+        and "custom" in mod.meta
+    ):
+        gm.meta.update({"custom": mod.meta["custom"]})
 
     exported_program = ExportedProgram(
         root=gm,
