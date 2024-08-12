@@ -351,6 +351,15 @@ class ViewAndMutationMeta:
     # and backward output.
     bw_donated_idxs: Optional[List[int]] = None
 
+    # Tokens, that were not used in backward are not added as joint outputs to avoid partitioner failures.
+    # Filled after tracing joint function.
+    num_bw_out_tokens: Optional[int] = None
+
+    # In case when some effect tokens were not used in forward (len(tokens) == 0
+    # But were used in backward.
+    # The joint graph will be edited to add additional bw_token_input.
+    num_backward_discovered_tokens: int = 0
+
     def __post_init__(self):
         # pre-compute the indices of the inputs that are mutated.
         # When keep_input_mutations is set, we don't need to worry about our epilogue
