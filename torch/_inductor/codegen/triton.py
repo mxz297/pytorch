@@ -369,6 +369,10 @@ def triton_reshape(value: str, old_shape: List[str], new_shape: List[str]):
     return f"{value}[{', '.join(expand)}]"
 
 
+def _maybe_upcast_to_fp32():
+    return ".to(tl.float32)" if config.triton.codegen_upcast_to_fp32 else ""
+
+
 # NB: Inheriting from PythonPrinter is somewhat dangerous, because there are a
 # number of operators which Triton "implements", but in a way that is
 # inconsistent with Python semantics (and consistent with C semantics).  We
@@ -430,7 +434,7 @@ class TritonPrinter(PythonPrinter):
         return f"libdevice.ceil({self._print(expr.args[0])}).to({V.kernel.index_dtype})"
 
     def _helper_sqrt(self, expr):
-        return f"libdevice.sqrt({self._print(expr)}.to(tl.float32))"
+        return f"libdevice.sqrt({self._print(expr)}.to(tl.float32)).to({expr}.dtype)"
 
     def _print_Where(self, expr):
         c = self.doprint(expr.args[0])
@@ -470,39 +474,39 @@ class TritonPrinter(PythonPrinter):
 
     def _print_OpaqueUnaryFn_cos(self, expr):
         assert len(expr.args) == 1
-        return f"libdevice.cos(({self._print(expr.args[0])}).to(tl.float32))"
+        return f"libdevice.cos(({self._print(expr.args[0])}).to(tl.float32)).to({expr.args[0]}.dtype)"
 
     def _print_OpaqueUnaryFn_cosh(self, expr):
         assert len(expr.args) == 1
-        return f"libdevice.cosh(({self._print(expr.args[0])}).to(tl.float32))"
+        return f"libdevice.cosh(({self._print(expr.args[0])}).to(tl.float32)).to({expr.args[0]}.dtype)"
 
     def _print_OpaqueUnaryFn_acos(self, expr):
         assert len(expr.args) == 1
-        return f"libdevice.acos(({self._print(expr.args[0])}).to(tl.float32))"
+        return f"libdevice.acos(({self._print(expr.args[0])}).to(tl.float32)).to({expr.args[0]}.dtype)"
 
     def _print_OpaqueUnaryFn_sin(self, expr):
         assert len(expr.args) == 1
-        return f"libdevice.sin(({self._print(expr.args[0])}).to(tl.float32))"
+        return f"libdevice.sin(({self._print(expr.args[0])}).to(tl.float32)).to({expr.args[0]}.dtype)"
 
     def _print_OpaqueUnaryFn_sinh(self, expr):
         assert len(expr.args) == 1
-        return f"libdevice.sinh(({self._print(expr.args[0])}).to(tl.float32))"
+        return f"libdevice.sinh(({self._print(expr.args[0])}).to(tl.float32)).to({expr.args[0]}.dtype)"
 
     def _print_OpaqueUnaryFn_asin(self, expr):
         assert len(expr.args) == 1
-        return f"libdevice.asin(({self._print(expr.args[0])}).to(tl.float32))"
+        return f"libdevice.asin(({self._print(expr.args[0])}).to(tl.float32)).to({expr.args[0]}.dtype)"
 
     def _print_OpaqueUnaryFn_tan(self, expr):
         assert len(expr.args) == 1
-        return f"libdevice.tan(({self._print(expr.args[0])}).to(tl.float32))"
+        return f"libdevice.tan(({self._print(expr.args[0])}).to(tl.float32)).to({expr.args[0]}.dtype)"
 
     def _print_OpaqueUnaryFn_tanh(self, expr):
         assert len(expr.args) == 1
-        return f"libdevice.tanh(({self._print(expr.args[0])}).to(tl.float32))"
+        return f"libdevice.tanh(({self._print(expr.args[0])}).to(tl.float32)).to({expr.args[0]}.dtype)"
 
     def _print_OpaqueUnaryFn_atan(self, expr):
         assert len(expr.args) == 1
-        return f"libdevice.atan(({self._print(expr.args[0])}).to(tl.float32))"
+        return f"libdevice.atan(({self._print(expr.args[0])}).to(tl.float32)).to({expr.args[0]}.dtype)"
 
     def _print_RoundToInt(self, expr):
         assert len(expr.args) == 1
@@ -527,7 +531,10 @@ def triton_compute_type(dtype):
     triton_type_name = str(dtype).split(".")[-1]
     if triton_type_name == "bool":
         triton_type_name = "int1"
-    elif triton_type_name in ("float16", "bfloat16"):
+    elif (
+        triton_type_name in ("float16", "bfloat16")
+        and config.triton.codegen_upcast_to_fp32
+    ):
         # float16 math is done in float32 inside the kernel
         triton_type_name = "float32"
     elif triton_type_name == "float8_e4m3fn":
@@ -545,7 +552,10 @@ def _get_primitive_bitwidth(dtype):
     if hasattr(dtype, "is_floating_point"):
         if dtype.is_floating_point:
             # triton_compute_type changes the bitwidth
-            if dtype in [torch.bfloat16, torch.float16]:
+            if (
+                dtype in [torch.bfloat16, torch.float16]
+                and config.triton.codegen_upcast_to_fp32
+            ):
                 return 32
             return torch.finfo(dtype).bits
         else:
@@ -657,7 +667,10 @@ class TritonOverrides(OpOverrides):
         # In such as case, we will have to convert the input tensor to
         # its src_type, perform bitcast, and then convert the bit-casted
         # tensor back to float to ensure we use values with the right precision.
-        if src_dtype in (torch.float16, torch.bfloat16):
+        if (
+            src_dtype in (torch.float16, torch.bfloat16)
+            and config.triton.codegen_upcast_to_fp32
+        ):
             triton_src_dtype = str(src_dtype).split(".")[-1]
             cast_x = f"{x}.to(tl.{triton_src_dtype})"
             if dtype in (torch.float16, torch.bfloat16):
@@ -703,23 +716,23 @@ class TritonOverrides(OpOverrides):
 
     @staticmethod
     def libdevice_exp(x):
-        return f"libdevice.exp({x})"
+        return f"libdevice.exp({x}.to(tl.float32)).to({x}.dtype)"
 
     @staticmethod
     def exp2(x):
-        return f"libdevice.exp2({x})"
+        return f"libdevice.exp2({x}.to(tl.float32)).to({x}.dtype)"
 
     @staticmethod
     def expm1(x):
-        return f"libdevice.expm1({x})"
+        return f"libdevice.expm1({x}.to(tl.float32)).to({x}.dtype)"
 
     @staticmethod
     def sqrt(x):
-        return f"libdevice.sqrt({x})"
+        return f"libdevice.sqrt({x}.to(tl.float32)).to({x}.dtype)"
 
     @staticmethod
     def libdevice_sqrt(x):
-        return f"libdevice.sqrt({x})"
+        return f"libdevice.sqrt({x}.to(tl.float32)).to({x}.dtype)"
 
     @staticmethod
     def relu(x):
@@ -767,7 +780,7 @@ class TritonOverrides(OpOverrides):
 
     @staticmethod
     def libdevice_cos(x):
-        return f"libdevice.cos({x})"
+        return f"libdevice.cos({x}.to(tl.float32)).to({x}.dtype)"
 
     @staticmethod
     def sin(x):
@@ -775,7 +788,7 @@ class TritonOverrides(OpOverrides):
 
     @staticmethod
     def libdevice_sin(x):
-        return f"libdevice.sin({x})"
+        return f"libdevice.sin({x}.to(tl.float32)).to({x}.dtype)"
 
     @classmethod
     def index_expr(cls, expr, dtype):
@@ -787,35 +800,35 @@ class TritonOverrides(OpOverrides):
 
     @staticmethod
     def lgamma(x):
-        return f"libdevice.lgamma({x})"
+        return f"libdevice.lgamma({x}.to(tl.float32)).to({x}.dtype)"
 
     @staticmethod
     def erf(x):
-        return f"libdevice.erf({x})"
+        return f"libdevice.erf({x}.to(tl.float32)).to({x}.dtype)"
 
     @staticmethod
     def cosh(x):
-        return f"libdevice.cosh({x})"
+        return f"libdevice.cosh({x}.to(tl.float32)).to({x}.dtype)"
 
     @staticmethod
     def sinh(x):
-        return f"libdevice.sinh({x})"
+        return f"libdevice.sinh({x}.to(tl.float32)).to({x}.dtype)"
 
     @staticmethod
     def acos(x):
-        return f"libdevice.acos({x})"
+        return f"libdevice.acos({x}.to(tl.float32)).to({x}.dtype)"
 
     @staticmethod
     def acosh(x):
-        return f"libdevice.acosh({x})"
+        return f"libdevice.acosh({x}.to(tl.float32)).to({x}.dtype)"
 
     @staticmethod
     def asin(x):
-        return f"libdevice.asin({x})"
+        return f"libdevice.asin({x}.to(tl.float32)).to({x}.dtype)"
 
     @staticmethod
     def asinh(x):
-        return f"libdevice.asinh({x})"
+        return f"libdevice.asinh({x}.to(tl.float32)).to({x}.dtype)"
 
     @staticmethod
     def atan2(x, y):
@@ -823,11 +836,11 @@ class TritonOverrides(OpOverrides):
 
     @staticmethod
     def atan(x):
-        return f"libdevice.atan({x})"
+        return f"libdevice.atan({x}.to(tl.float32)).to({x}.dtype)"
 
     @staticmethod
     def atanh(x):
-        return f"libdevice.atanh({x})"
+        return f"libdevice.atanh({x}.to(tl.float32)).to({x}.dtype)"
 
     @staticmethod
     def copysign(x, y):
@@ -835,11 +848,11 @@ class TritonOverrides(OpOverrides):
 
     @staticmethod
     def erfc(x):
-        return f"libdevice.erfc({x})"
+        return f"libdevice.erfc({x}.to(tl.float32)).to({x}.dtype)"
 
     @staticmethod
     def erfinv(x):
-        return f"libdevice.erfinv({x})"
+        return f"libdevice.erfinv({x}.to(tl.float32)).to({x}.dtype)"
 
     @staticmethod
     def hypot(x, y):
@@ -847,11 +860,11 @@ class TritonOverrides(OpOverrides):
 
     @staticmethod
     def log10(x):
-        return f"libdevice.log10({x})"
+        return f"libdevice.log10({x}.to(tl.float32)).to({x}.dtype)"
 
     @staticmethod
     def log2(x):
-        return f"libdevice.log2({x})"
+        return f"libdevice.log2({x}.to(tl.float32)).to({x}.dtype)"
 
     @staticmethod
     def nextafter(x, y):
@@ -918,19 +931,19 @@ class TritonOverrides(OpOverrides):
 
     @staticmethod
     def rsqrt(x):
-        return f"libdevice.rsqrt({x})"
+        return f"libdevice.rsqrt({x}.to(tl.float32)).to({x}.dtype)"
 
     @staticmethod
     def log1p(x):
-        return f"libdevice.log1p({x})"
+        return f"libdevice.log1p({x}.to(tl.float32)).to({x}.dtype)"
 
     @staticmethod
     def tan(x):
-        return f"libdevice.tan({x})"
+        return f"libdevice.tan({x}.to(tl.float32)).to({x}.dtype)"
 
     @staticmethod
     def tanh(x):
-        return f"libdevice.tanh({x})"
+        return f"libdevice.tanh({x}.to(tl.float32)).to({x}.dtype)"
 
     @staticmethod
     def sigmoid(x):
@@ -955,7 +968,7 @@ class TritonOverrides(OpOverrides):
 
     @staticmethod
     def libdevice_log(x):
-        return f"libdevice.log({x})"
+        return f"libdevice.log({x}.to(tl.float32)).to({x}.dtype)"
 
     @staticmethod
     def isinf(x):
@@ -971,7 +984,7 @@ class TritonOverrides(OpOverrides):
 
     @staticmethod
     def floor(x):
-        return f"libdevice.floor({x})"
+        return f"libdevice.floor({x}.to(tl.float32)).to({x}.dtype)"
 
     @staticmethod
     def floordiv(a, b):
@@ -992,7 +1005,7 @@ class TritonOverrides(OpOverrides):
 
     @staticmethod
     def trunc(x):
-        return f"libdevice.trunc({x})"
+        return f"libdevice.trunc({x}.to(tl.float32)).to({x}.dtype)"
 
     @staticmethod
     def truncdiv(a, b):
@@ -1002,7 +1015,7 @@ class TritonOverrides(OpOverrides):
 
     @staticmethod
     def ceil(x):
-        return f"libdevice.ceil({x})"
+        return f"libdevice.ceil({x}.to(tl.float32)).to({x}.dtype)"
 
 
 TritonOverrides._initialize_pointwise_overrides("triton")
@@ -1766,7 +1779,10 @@ class TritonKernel(SIMDKernel):
                 line = f"tl.load({var} + ({indexing.index_str}), {indexing.mask_str}{ep}{other})"
 
             dtype = V.graph.get_dtype(name)
-            if dtype in (torch.float16, torch.bfloat16):
+            if (
+                dtype in (torch.float16, torch.bfloat16)
+                and config.triton.codegen_upcast_to_fp32
+            ):
                 line += ".to(tl.float32)"
             if dtype == torch.bool and torch.version.hip is None:
                 # Workaround for https://github.com/openai/triton/issues/2151
