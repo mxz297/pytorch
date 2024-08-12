@@ -227,6 +227,8 @@ class profile:
         # TODO Consider changing _function_events into data structure with size cap
         self._function_events: Optional[EventList] = None
         self._old_function_events: Optional[EventList] = None
+        # Function event processing is done lazily
+        self._needs_processing = False
         self.entered = False
         self.record_shapes = record_shapes
         self.with_flops = with_flops
@@ -350,6 +352,7 @@ class profile:
         if self._function_events and self.acc_events:
             self._old_function_events = self._function_events
         self._function_events = None
+        self._needs_processing = True
 
         t0 = perf_counter_ns()
 
@@ -368,11 +371,15 @@ class profile:
         return False
 
     def __repr__(self):
+        if self._needs_processing:
+            self._ensure_function_events()
         if self._function_events is None:
             return "<unfinished torch.autograd.profile>"
         return repr(self._function_events)
 
     def __str__(self):
+        if self._needs_processing:
+            self._ensure_function_events()
         if self._function_events is None:
             return "<unfinished torch.autograd.profile>"
         return str(self._function_events)
@@ -381,6 +388,7 @@ class profile:
         """Process function events lazily if required"""
         if self._function_events is not None:
             return
+        self._needs_processing = False
 
         t0 = perf_counter_ns()
         parsed_results = []
@@ -411,7 +419,7 @@ class profile:
 
     @property
     def function_events(self):
-        if self._function_events is None:
+        if self._function_events is None or self._needs_processing:
             self._ensure_function_events()
         return self._function_events
 
